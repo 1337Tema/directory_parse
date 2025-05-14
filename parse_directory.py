@@ -12,7 +12,7 @@ def _write_folder_tree_recursive(
     output_filename_to_exclude=None,
     root_folder_abs_path=None,
     include_file_content=False # New parameter
-):
+    ):
     """
     Recursively traverses and writes the directory structure to the output file.
     Optionally includes text content of files.
