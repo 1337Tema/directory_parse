@@ -1,43 +1,39 @@
 import os
 
-# This script is designed to visualize the directory structure of a specified folder
-# and save this structure to a text file.
-# It recursively traverses all subfolders and files,
-# creating a tree-like representation with labels (folder/file).
-# The resulting file is saved in the root of the analyzed folder.
-# Hidden files and folders are always included.
-# The output filename is fixed to "folder_structure.txt".
-
-DEFAULT_OUTPUT_FILENAME = "folder_structure.txt"
+# --- Constants ---
+STRUCTURE_ONLY_FILENAME = "folder_structure.txt"
+STRUCTURE_WITH_CONTENT_FILENAME = "folder_structure_with_content.txt"
+MAX_FILE_CONTENT_LINES = 10e10  # Max lines of content to include per file if requested
 
 def _write_folder_tree_recursive(
     current_folder_path,
     prefix="",
     output_file=None,
     output_filename_to_exclude=None,
-    root_folder_abs_path=None
+    root_folder_abs_path=None,
+    include_file_content=False # New parameter
 ):
     """
-    Recursively traverses and writes the directory structure to the output file,
-    excluding the output file itself from the listing if it's in the root directory.
+    Recursively traverses and writes the directory structure to the output file.
+    Optionally includes text content of files.
+    Excludes the output file itself from the listing if it's in the root directory.
     Always shows hidden files.
 
     current_folder_path: Path to the current folder being scanned.
-    prefix: String used for indentation and tree lines.
+    prefix: String used for indentation and tree lines for items in this folder.
     output_file: File object to write to.
-    output_filename_to_exclude: The basename of the output file to exclude from the listing.
+    output_filename_to_exclude: The basename of the current output file to exclude.
     root_folder_abs_path: Absolute path of the initial root folder being analyzed.
+    include_file_content: Boolean, whether to read and include content of files.
     """
     try:
-        # Get all items in the current directory
         listed_entries = os.listdir(current_folder_path)
-        listed_entries.sort()  # Sort for consistent output
+        listed_entries.sort()
     except PermissionError:
-        # If access to the directory is denied, write an error message to the file
         if output_file:
             output_file.write(f"{prefix}├── [Access Denied]\n")
         return
-    except FileNotFoundError: # In case the path becomes invalid during execution
+    except FileNotFoundError:
         if output_file:
             output_file.write(f"{prefix}├── [Path not found - unexpected]\n")
         return
@@ -46,103 +42,141 @@ def _write_folder_tree_recursive(
     current_folder_abs_path_for_check = os.path.abspath(current_folder_path)
 
     for entry_name in listed_entries:
-        # Hidden files are always included, so no specific skip for them here.
-
-        # Exclude the output file itself if it's in the root analyzed directory
+        # Hidden files are always included (no specific skip for them).
         if (entry_name == output_filename_to_exclude and
                 current_folder_abs_path_for_check == root_folder_abs_path):
             continue
-        
         entries_to_process.append(entry_name)
 
-    # Prepare pointers for tree elements
     pointers = ["├── "] * (len(entries_to_process) - 1) + ["└── "] if entries_to_process else []
 
     for i, entry_name in enumerate(entries_to_process):
-        # Construct full path to the current item
         current_path = os.path.join(current_folder_path, entry_name)
-        pointer = pointers[i]
+        item_pointer = pointers[i] # e.g., "├── " or "└── "
 
         if os.path.isdir(current_path):
-            # If it's a directory, write it and recurse
-            output_file.write(f"{prefix}{pointer}{entry_name} (folder)\n")
-            # Update prefix for the next level of indentation
-            extension = "│   " if pointer == "├── " else "    "
+            output_file.write(f"{prefix}{item_pointer}{entry_name} (folder)\n")
+            # Determine extension for the prefix of items within this subfolder
+            extension_for_next_level = "│   " if item_pointer == "├── " else "    "
             _write_folder_tree_recursive(
                 current_path,
-                prefix + extension,
+                prefix + extension_for_next_level, # New prefix for items in subfolder
                 output_file,
                 output_filename_to_exclude,
-                root_folder_abs_path
+                root_folder_abs_path,
+                include_file_content
             )
         elif os.path.isfile(current_path):
-            # If it's a file, just write it
-            output_file.write(f"{prefix}{pointer}{entry_name} (file)\n")
+            output_file.write(f"{prefix}{item_pointer}{entry_name} (file)\n")
+            if include_file_content:
+                # Determine the base prefix for content lines under this file
+                # It should align with the tree structure's vertical lines
+                if item_pointer == "├── ":
+                    content_base_prefix_ext = "│   "
+                else:  # "└── "
+                    content_base_prefix_ext = "    "
+                
+                full_content_prefix = prefix + content_base_prefix_ext + "┆ " # Using '┆' for content lines
+
+                try:
+                    with open(current_path, 'r', encoding='utf-8', errors='replace') as f_content:
+                        output_file.write(f"{full_content_prefix}--- File Content (up to {MAX_FILE_CONTENT_LINES} lines) ---\n")
+                        lines_written = 0
+                        content_found_and_printed = False
+                        for line_text in f_content:
+                            if lines_written >= MAX_FILE_CONTENT_LINES:
+                                output_file.write(f"{full_content_prefix}[...content truncated...]\n")
+                                content_found_and_printed = True
+                                break
+                            output_file.write(f"{full_content_prefix}{line_text.rstrip()}\n")
+                            lines_written += 1
+                            content_found_and_printed = True
+                        
+                        if not content_found_and_printed and lines_written == 0:
+                             output_file.write(f"{full_content_prefix}[File is empty or content not shown due to 0 line limit]\n")
+                        
+                        output_file.write(f"{full_content_prefix}--- File Content End ---\n")
+
+                except UnicodeDecodeError:
+                    output_file.write(f"{full_content_prefix}[Binary file or unreadable text encoding - Content not displayed]\n")
+                except IOError as e:
+                    output_file.write(f"{full_content_prefix}[Error reading file: {e}]\n")
+                except Exception as e:
+                    output_file.write(f"{full_content_prefix}[Unexpected error reading file content: {e}]\n")
         else:
-            # For other item types (e.g., symbolic links)
-            output_file.write(f"{prefix}{pointer}{entry_name} (other)\n")
+            output_file.write(f"{prefix}{item_pointer}{entry_name} (other)\n")
 
 
-def save_directory_structure_to_file(root_folder_path):
+def _generate_and_save_single_structure_file(
+    root_folder_path,
+    output_filename,
+    include_file_content_flag
+):
     """
-    Main function to generate the directory structure and save it to a file
-    named DEFAULT_OUTPUT_FILENAME in the root_folder_path.
+    Generates the directory structure (and optionally file content)
+    and saves it to the specified output_filename in the root_folder_path.
     Always includes hidden files.
 
     root_folder_path: The root folder whose structure needs to be listed.
+    output_filename: The name of the file to save the structure to.
+    include_file_content_flag: Boolean, whether to include content of files.
     """
-    # Check if the provided path exists
     if not os.path.exists(root_folder_path):
         print(f"Error: Path '{root_folder_path}' does not exist.")
-        return
-
-    # Check if the path is a directory
+        return False
     if not os.path.isdir(root_folder_path):
         print(f"Error: Path '{root_folder_path}' is not a directory.")
-        return
+        return False
 
-    # Construct the full path for the output file
-    output_filepath = os.path.join(root_folder_path, DEFAULT_OUTPUT_FILENAME)
-    
-    # Get absolute path of the root folder for correct exclusion of the output file
+    output_filepath = os.path.join(root_folder_path, output_filename)
     root_folder_abs_path_for_check = os.path.abspath(root_folder_path)
 
     try:
-        # Open the file for writing with UTF-8 encoding.
-        # 'w' mode will overwrite the file if it exists.
         with open(output_filepath, 'w', encoding='utf-8') as f:
-            # Write the root directory name to the file
             f.write(f"{os.path.basename(root_folder_path)} (folder)\n")
-
-            # Start the recursive traversal and writing to file
             _write_folder_tree_recursive(
                 root_folder_path,
-                prefix="  ", # Initial prefix for the root folder's content
+                prefix="  ",
                 output_file=f,
-                output_filename_to_exclude=DEFAULT_OUTPUT_FILENAME,
-                root_folder_abs_path=root_folder_abs_path_for_check
+                output_filename_to_exclude=output_filename, # Exclude the current output file
+                root_folder_abs_path=root_folder_abs_path_for_check,
+                include_file_content=include_file_content_flag
             )
-
-        print(f"\nFolder structure successfully saved to: {output_filepath}")
-
+        print(f"Successfully saved to: {output_filepath}")
+        return True
     except IOError as e:
-        # I/O error (e.g., no write permission)
         print(f"Error writing to file '{output_filepath}': {e}")
+        return False
     except Exception as e:
-        # Other unexpected errors
-        print(f"An unexpected error occurred: {e}")
-
+        print(f"An unexpected error occurred while processing '{output_filename}': {e}")
+        return False
 
 # --- Script execution starts here ---
 if __name__ == "__main__":
-    # Prompt user for the folder path
     target_directory = input("Enter path to the folder to analyze: ")
 
-    print(f"\nGenerating folder structure for '{target_directory}'...")
-    print(f"Output will be saved to '{DEFAULT_OUTPUT_FILENAME}' in that folder.")
-    print(f"Hidden files and folders will be included.")
+    parse_with_content_input = input(
+        "Include file content? (This will create an additional file if 'yes') (yes/no) [no]: "
+    ).lower()
+    should_parse_with_content = parse_with_content_input in ['yes', 'y']
 
+    print(f"\nGenerating documentation for '{target_directory}'...")
 
-    save_directory_structure_to_file(target_directory)
+    # 1. Always generate the structure-only file
+    print(f"\nAttempting to create structure-only file: '{STRUCTURE_ONLY_FILENAME}'")
+    _generate_and_save_single_structure_file(
+        target_directory,
+        output_filename=STRUCTURE_ONLY_FILENAME,
+        include_file_content_flag=False
+    )
 
-    print("Done.")
+    # 2. Optionally, generate the file with structure and content
+    if should_parse_with_content:
+        print(f"\nAttempting to create structure-with-content file: '{STRUCTURE_WITH_CONTENT_FILENAME}'")
+        _generate_and_save_single_structure_file(
+            target_directory,
+            output_filename=STRUCTURE_WITH_CONTENT_FILENAME,
+            include_file_content_flag=True
+        )
+
+    print("\nDocumentation generation finished.")
