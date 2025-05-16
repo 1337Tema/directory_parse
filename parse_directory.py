@@ -50,7 +50,7 @@ TEXT_FILE_EXTENSIONS = {
     '.plantuml', '.puml', '.pu', # PlantUML
     '.dot', '.gv', # Graphviz DOT
     '.ipynb', # Jupyter Notebook (JSON based, readable as text)
-    '.pro', '.pri',
+    '.pro', '.pri', '.src'
     # Add more as needed
 }
 TEXT_FILE_EXTENSIONS.add('') # For files with no extension that might be text
