@@ -1,9 +1,11 @@
 import os
+import json
 
 # --- Constants ---
 STRUCTURE_ONLY_FILENAME = "folder_structure.txt"
 STRUCTURE_WITH_CONTENT_FILENAME = "folder_structure_with_content.txt"
 MAX_FILE_CONTENT_LINES = 10e10  # Max lines of content to include per file if requested
+CSV_PREVIEW_LINES = 10          # Max lines of content to include for CSV files if requested
 
 # List of common text file extensions (lowercase)
 TEXT_FILE_EXTENSIONS = {
@@ -33,9 +35,10 @@ TEXT_FILE_EXTENSIONS = {
     '.asp', '.aspx', '.jsp', '.ejs', '.hbs', '.mustache', '.pug', '.jade',
     '.htaccess', '.htpasswd',
     # Data Formats
-    '.csv', '.tsv', '.jsonl', '.ndjson', '.sql', '.graphql', '.gql',
+    '.csv', '.tsv', '.jsonl', '.ndjson', '.sql', '.graphql', '.gql', # .csv остается здесь, но будет перехвачен раньше
     # Config & Build Files
-    '.dockerfile', 'dockerfile', '.env', '.gitattributes', '.gitignore', '.gitmodules', '.editorconfig',
+    '.dockerfile', 'dockerfile',
+    '.gitattributes', '.gitignore', '.gitmodules', '.editorconfig',
     'makefile', 'makefile.in', 'cmakelists.txt', 'meson.build',
     '.pom', '.gradle', '.sbt', '.project', '.classpath', '.build',
     '.csproj', '.vbproj', '.sln', '.suo',
@@ -49,14 +52,14 @@ TEXT_FILE_EXTENSIONS = {
     '.reg', # Windows Registry
     '.plantuml', '.puml', '.pu', # PlantUML
     '.dot', '.gv', # Graphviz DOT
-    '.ipynb', # Jupyter Notebook (JSON based, readable as text)
+    # '.ipynb', # Убрано, обрабатывается отдельно
     '.pro', '.pri', '.src'
-    # Add more as needed
 }
 TEXT_FILE_EXTENSIONS.add('') # For files with no extension that might be text
 
 # Encodings to try for reading text file content, in order of preference
 ENCODINGS_TO_TRY_FOR_CONTENT = ['utf-8', 'cp1251', 'cp1252', 'latin-1', 'utf-16']
+
 
 def _read_text_file_content_with_encodings(
     filepath,
@@ -65,22 +68,15 @@ def _read_text_file_content_with_encodings(
     output_file_obj
     ):
     """
-    Tries to read a text file with a list of encodings and write its content.
-    filepath: Path to the file to read.
-    max_lines: Maximum number of lines to write.
-    base_prefix: Prefix string for each line of content.
-    output_file_obj: File object to write to.
-    Returns True if content was successfully read and processed, False otherwise.
+    Tries to read a standard text file with a list of encodings and write its content.
     """
     for enc in ENCODINGS_TO_TRY_FOR_CONTENT:
         try:
             with open(filepath, 'r', encoding=enc, errors='strict') as f_content:
-                # --- If open succeeds, THIS encoding is used. Now print the header. ---
                 output_file_obj.write(f"{base_prefix}--- File Content (text, encoding: {enc}, up to {max_lines} lines) ---\n")
-                
                 lines_written = 0
                 content_found_and_printed = False
-                for line_text in f_content: # Read actual content
+                for line_text in f_content:
                     if lines_written >= max_lines:
                         output_file_obj.write(f"{base_prefix}[...content truncated...]\n")
                         content_found_and_printed = True
@@ -88,30 +84,136 @@ def _read_text_file_content_with_encodings(
                     output_file_obj.write(f"{base_prefix}{line_text.rstrip()}\n")
                     lines_written += 1
                     content_found_and_printed = True
-                
                 if not content_found_and_printed and lines_written == 0:
                      output_file_obj.write(f"{base_prefix}[File is empty or content not shown due to 0 line limit]\n")
-                
                 output_file_obj.write(f"{base_prefix}--- File Content End ---\n")
-                return True # Successfully read and written with this encoding
+                return True
+        except UnicodeDecodeError:
+            continue
+        except IOError as e:
+            output_file_obj.write(f"{base_prefix}[IOError reading file (tried encoding {enc}): {e}]\n")
+            return False
+        except Exception as e:
+            output_file_obj.write(f"{base_prefix}[Unexpected error reading file (tried encoding {enc}): {e}]\n")
+            return False
+    output_file_obj.write(f"{base_prefix}[Could not decode file using tried encodings ({', '.join(ENCODINGS_TO_TRY_FOR_CONTENT)}) - Content not displayed]\n")
+    return False
+
+
+def _read_ipynb_content(filepath, max_lines, base_prefix, output_file_obj):
+    """
+    Reads a .ipynb (Jupyter Notebook) file, extracts markdown and code cells.
+    """
+    output_file_obj.write(f"{base_prefix}--- Jupyter Notebook Content (markdown & code cells, up to {max_lines} lines total) ---\n")
+    lines_written_total = 0
+    content_processed = False
+
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            notebook_data = json.load(f)
+        
+        if 'cells' not in notebook_data or not isinstance(notebook_data['cells'], list):
+            output_file_obj.write(f"{base_prefix}[Invalid .ipynb format: 'cells' array not found]\n")
+            output_file_obj.write(f"{base_prefix}--- Jupyter Notebook Content End ---\n")
+            return False
+
+        for i, cell in enumerate(notebook_data['cells']):
+            if lines_written_total >= max_lines:
+                break 
+            cell_type = cell.get('cell_type')
+            source = cell.get('source')
+            if not isinstance(source, list):
+                if isinstance(source, str): source = source.splitlines(keepends=True)
+                else: continue
+
+            if cell_type == 'markdown':
+                if lines_written_total < max_lines:
+                    header = f"{base_prefix}[Markdown Cell {i+1}]\n"
+                    output_file_obj.write(header)
+                    lines_written_total += header.count('\n')
+                    content_processed = True
+                for line in source:
+                    if lines_written_total >= max_lines:
+                        output_file_obj.write(f"{base_prefix}[...content truncated...]\n")
+                        break
+                    output_file_obj.write(f"{base_prefix}{line.rstrip()}\n")
+                    lines_written_total += 1
+            elif cell_type == 'code':
+                if lines_written_total < max_lines:
+                    header = f"{base_prefix}[Code Cell {i+1}]\n"
+                    output_file_obj.write(header)
+                    lines_written_total += header.count('\n')
+                    content_processed = True
+                for line in source:
+                    if lines_written_total >= max_lines:
+                        output_file_obj.write(f"{base_prefix}[...content truncated...]\n")
+                        break
+                    output_file_obj.write(f"{base_prefix}{line.rstrip()}\n")
+                    lines_written_total += 1
+        
+        if not content_processed and lines_written_total == 0:
+            output_file_obj.write(f"{base_prefix}[No markdown or code cells found, or content not shown due to 0 line limit]\n")
+
+    except json.JSONDecodeError as e:
+        output_file_obj.write(f"{base_prefix}[Error decoding .ipynb JSON: {e}]\n")
+    except IOError as e:
+        output_file_obj.write(f"{base_prefix}[IOError reading .ipynb file: {e}]\n")
+    except Exception as e:
+        output_file_obj.write(f"{base_prefix}[Unexpected error processing .ipynb file: {e}]\n")
+    finally:
+        output_file_obj.write(f"{base_prefix}--- Jupyter Notebook Content End ---\n")
+    return content_processed
+
+def _read_csv_content(filepath, max_preview_lines, base_prefix, output_file_obj):
+    """
+    Reads a .csv file and writes a preview (first N lines), trying multiple encodings.
+    """
+    content_successfully_read = False
+    for enc in ENCODINGS_TO_TRY_FOR_CONTENT:
+        try:
+            with open(filepath, 'r', encoding=enc, errors='strict') as f_content:
+                # Если открытие успешно, выводим информацию о кодировке и заголовок
+                output_file_obj.write(f"{base_prefix}--- CSV File Content Preview (encoding: {enc}, up to {max_preview_lines} lines) ---\n")
+                lines_written = 0
+                content_found_in_this_attempt = False
+                
+                for line_text in f_content:
+                    if lines_written >= max_preview_lines:
+                        if lines_written > 0: # Только если что-то уже было написано
+                             output_file_obj.write(f"{base_prefix}[...remaining content truncated...]\n")
+                        content_found_in_this_attempt = True
+                        break
+                    output_file_obj.write(f"{base_prefix}{line_text.rstrip()}\n")
+                    lines_written += 1
+                    content_found_in_this_attempt = True
+                
+                if not content_found_in_this_attempt and lines_written == 0:
+                     output_file_obj.write(f"{base_prefix}[File is empty or preview not shown due to 0 line limit]\n")
+                
+                output_file_obj.write(f"{base_prefix}--- CSV File Content Preview End ---\n")
+                content_successfully_read = True
+                return True # Успешно прочитали и записали с этой кодировкой
         
         except UnicodeDecodeError:
-            # This encoding failed, try the next one silently.
-            continue 
+            continue # Пробуем следующую кодировку
         
         except IOError as e:
-            # This error is more severe than just a bad encoding guess.
-            # Report it and stop trying for this file.
-            output_file_obj.write(f"{base_prefix}[IOError reading file (tried encoding {enc}): {e}]\n")
-            return False # IO error, stop trying for this file
+            output_file_obj.write(f"{base_prefix}--- CSV File Content Preview (attempted encoding: {enc}) ---\n")
+            output_file_obj.write(f"{base_prefix}[IOError reading CSV file: {e}]\n")
+            output_file_obj.write(f"{base_prefix}--- CSV File Content Preview End ---\n")
+            return False # Прекращаем попытки для этого файла
         
         except Exception as e:
-            # Catch-all for other unexpected errors during file processing.
-            output_file_obj.write(f"{base_prefix}[Unexpected error reading file (tried encoding {enc}): {e}]\n")
-            return False # Unexpected error, stop trying for this file
+            output_file_obj.write(f"{base_prefix}--- CSV File Content Preview (attempted encoding: {enc}) ---\n")
+            output_file_obj.write(f"{base_prefix}[Unexpected error processing CSV file: {e}]\n")
+            output_file_obj.write(f"{base_prefix}--- CSV File Content Preview End ---\n")
+            return False # Прекращаем попытки для этого файла
 
-    # If loop completes, all encodings failed
-    output_file_obj.write(f"{base_prefix}[Could not decode file using tried encodings ({', '.join(ENCODINGS_TO_TRY_FOR_CONTENT)}) - Content not displayed]\n")
+    # Если все кодировки не подошли
+    if not content_successfully_read:
+        output_file_obj.write(f"{base_prefix}--- CSV File Content Preview ---\n")
+        output_file_obj.write(f"{base_prefix}[Could not decode CSV file using tried encodings ({', '.join(ENCODINGS_TO_TRY_FOR_CONTENT)}) - Preview not displayed]\n")
+        output_file_obj.write(f"{base_prefix}--- CSV File Content Preview End ---\n")
     return False
 
 
@@ -124,14 +226,6 @@ def _write_folder_tree_recursive(
     include_file_content=False,
     files_to_skip_content_processing=None
     ):
-    """
-    Recursively traverses and writes the directory structure.
-    Optionally includes text content of files, trying multiple encodings.
-    Excludes the output file itself from listing if in the root.
-    Skips content processing for specified files.
-
-    files_to_skip_content_processing: Set of filenames whose content should not be processed.
-    """
     if files_to_skip_content_processing is None:
         files_to_skip_content_processing = set()
 
@@ -139,12 +233,10 @@ def _write_folder_tree_recursive(
         listed_entries = os.listdir(current_folder_path)
         listed_entries.sort()
     except PermissionError:
-        if output_file:
-            output_file.write(f"{prefix}├── [Access Denied]\n")
+        if output_file: output_file.write(f"{prefix}├── [Access Denied]\n")
         return
     except FileNotFoundError:
-        if output_file:
-            output_file.write(f"{prefix}├── [Path not found - unexpected]\n")
+        if output_file: output_file.write(f"{prefix}├── [Path not found - unexpected]\n")
         return
 
     entries_to_process = []
@@ -153,6 +245,8 @@ def _write_folder_tree_recursive(
     for entry_name in listed_entries:
         if (entry_name == output_filename_to_exclude and
                 current_folder_abs_path_for_check == root_folder_abs_path):
+            continue
+        if entry_name.startswith('.'):
             continue
         entries_to_process.append(entry_name)
 
@@ -166,13 +260,9 @@ def _write_folder_tree_recursive(
             output_file.write(f"{prefix}{item_pointer}{entry_name} (folder)\n")
             extension_for_next_level = "│   " if item_pointer == "├── " else "    "
             _write_folder_tree_recursive(
-                current_path,
-                prefix + extension_for_next_level,
-                output_file,
-                output_filename_to_exclude,
-                root_folder_abs_path,
-                include_file_content,
-                files_to_skip_content_processing
+                current_path, prefix + extension_for_next_level, output_file,
+                output_filename_to_exclude, root_folder_abs_path,
+                include_file_content, files_to_skip_content_processing
             )
         elif os.path.isfile(current_path):
             output_file.write(f"{prefix}{item_pointer}{entry_name} (file)\n")
@@ -183,12 +273,27 @@ def _write_folder_tree_recursive(
                 if entry_name in files_to_skip_content_processing:
                     output_file.write(f"{full_content_prefix}[Content of {entry_name} intentionally not processed for this report]\n")
                 else:
-                    _ , file_ext = os.path.splitext(entry_name)
-                    # For files with no extension, file_ext will be '', which we added to TEXT_FILE_EXTENSIONS
-                    if file_ext.lower() in TEXT_FILE_EXTENSIONS:
+                    _, file_ext = os.path.splitext(entry_name)
+                    file_ext_lower = file_ext.lower()
+
+                    if file_ext_lower == '.ipynb':
+                        _read_ipynb_content(
+                            current_path,
+                            MAX_FILE_CONTENT_LINES, # Общее ограничение для ipynb
+                            full_content_prefix,
+                            output_file
+                        )
+                    elif file_ext_lower == '.csv': # <--- ОБРАБОТКА CSV
+                        _read_csv_content(
+                            current_path,
+                            CSV_PREVIEW_LINES, # Специальное ограничение для CSV
+                            full_content_prefix,
+                            output_file
+                        )
+                    elif file_ext_lower in TEXT_FILE_EXTENSIONS:
                         _read_text_file_content_with_encodings(
                             current_path,
-                            MAX_FILE_CONTENT_LINES,
+                            MAX_FILE_CONTENT_LINES, # Общее ограничение для остальных текстовых
                             full_content_prefix,
                             output_file
                         )
@@ -204,12 +309,6 @@ def _generate_and_save_single_structure_file(
     include_file_content_flag,
     additional_files_to_skip_content=None
 ):
-    """
-    Generates directory structure (and optionally text file content) and saves it.
-    
-    additional_files_to_skip_content: A set of filenames for which content processing
-                                      should be skipped if include_file_content_flag is True.
-    """
     if not os.path.exists(root_folder_path):
         print(f"Error: Path '{root_folder_path}' does not exist.")
         return False
@@ -221,8 +320,8 @@ def _generate_and_save_single_structure_file(
     root_folder_abs_path_for_check = os.path.abspath(root_folder_path)
 
     try:
-        with open(output_filepath, 'w', encoding='utf-8') as f: # Output file is always UTF-8
-            f.write(f"{os.path.basename(root_folder_path)} (folder)\n")
+        with open(output_filepath, 'w', encoding='utf-8') as f:
+            f.write(f"{os.path.basename(os.path.abspath(root_folder_path))} (folder)\n")
             _write_folder_tree_recursive(
                 root_folder_path,
                 prefix="  ",
@@ -241,18 +340,21 @@ def _generate_and_save_single_structure_file(
         print(f"An unexpected error occurred while processing '{output_filename}': {e}")
         return False
 
-# --- Script execution starts here ---
 if __name__ == "__main__":
-    target_directory = input("Enter path to the folder to analyze: ")
+    target_directory = input("Enter path to the folder to analyze (default: current directory): ")
+    if not target_directory.strip():
+        target_directory = "." 
+        print(f"No path entered, using current directory: {os.path.abspath(target_directory)}")
+    else:
+        target_directory = target_directory.strip()
 
     parse_with_content_input = input(
-        "Include text file content? (Uses a list of common text extensions and tries multiple encodings. This will create an additional file if 'yes') (yes/no) [no]: "
+        "Include text file content? (yes/no) [no]: "
     ).lower()
     should_parse_with_content = parse_with_content_input in ['yes', 'y']
 
-    print(f"\nGenerating documentation for '{target_directory}'...")
+    print(f"\nGenerating documentation for '{os.path.abspath(target_directory)}'...")
 
-    # 1. Always generate the structure-only file
     print(f"\nAttempting to create structure-only file: '{STRUCTURE_ONLY_FILENAME}'")
     _generate_and_save_single_structure_file(
         target_directory,
@@ -261,7 +363,6 @@ if __name__ == "__main__":
         additional_files_to_skip_content=None
     )
 
-    # 2. Optionally, generate the file with structure and text content
     if should_parse_with_content:
         print(f"\nAttempting to create structure-with-text-content file: '{STRUCTURE_WITH_CONTENT_FILENAME}'")
         files_to_skip_for_this_report = {STRUCTURE_ONLY_FILENAME}
